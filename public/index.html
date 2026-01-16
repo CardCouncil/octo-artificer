@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Landfall | MTG Land Art Voting</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <div>
+          <p class="eyebrow">Landfall</p>
+          <h1>Which land art is more inspiring?</h1>
+          <p class="subtitle">
+            Cast your vote with a click, a button, or your keyboard (A/B).
+          </p>
+        </div>
+        <div class="meta">
+          <span class="status" aria-live="polite" id="status">Loading lands…</span>
+          <span class="hint">Keyboard: A = left, B = right</span>
+        </div>
+      </header>
+
+      <main>
+        <section class="cards" aria-live="polite">
+          <article class="card" data-slot="A">
+            <div class="label">A</div>
+            <button class="image-button" id="voteA" aria-label="Vote for land A">
+              <img id="imageA" alt="Land art A" />
+            </button>
+            <div class="card-meta">
+              <p id="nameA" class="card-name"></p>
+              <p id="typeA" class="card-type"></p>
+              <p id="countA" class="card-count" hidden></p>
+            </div>
+            <button class="vote-button" data-choice="A">Vote A</button>
+          </article>
+
+          <article class="card" data-slot="B">
+            <div class="label">B</div>
+            <button class="image-button" id="voteB" aria-label="Vote for land B">
+              <img id="imageB" alt="Land art B" />
+            </button>
+            <div class="card-meta">
+              <p id="nameB" class="card-name"></p>
+              <p id="typeB" class="card-type"></p>
+              <p id="countB" class="card-count" hidden></p>
+            </div>
+            <button class="vote-button" data-choice="B">Vote B</button>
+          </article>
+        </section>
+
+        <section class="vote-recorded" id="voteRecorded" hidden>
+          <p>Vote recorded. Shuffling in fresh lands…</p>
+        </section>
+      </main>
+
+      <footer>
+        <p>
+          Landfall is unofficial Fan Content for Magic: The Gathering. © Wizards of the
+          Coast. Card data and images provided by Scryfall. Not endorsed by Wizards or
+          Scryfall.
+        </p>
+      </footer>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
