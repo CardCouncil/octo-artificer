@@ -1,8 +1,6 @@
 const { Pool } = require('pg');
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const SEED_LIMIT = Number(process.env.SEED_LIMIT || 400);
-
 if (!DATABASE_URL) {
   console.error('Missing DATABASE_URL. Set it to a Postgres connection string.');
   process.exit(1);
@@ -67,7 +65,7 @@ async function seed() {
   let url = BASE_URL;
   let saved = 0;
 
-  while (url && saved < SEED_LIMIT) {
+  while (url) {
     await rateLimitScryfall();
     const response = await fetch(url);
     if (!response.ok) {
@@ -75,9 +73,6 @@ async function seed() {
     }
     const data = await response.json();
     for (const card of data.data) {
-      if (saved >= SEED_LIMIT) {
-        break;
-      }
       if (!isLandCard(card)) {
         continue;
       }
