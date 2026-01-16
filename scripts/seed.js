@@ -41,6 +41,19 @@ function getArtCrop(card) {
   return null;
 }
 
+function getTypeLine(card) {
+  if (card?.type_line) {
+    return card.type_line;
+  }
+  if (Array.isArray(card?.card_faces)) {
+    const faceWithType = card.card_faces.find((face) => face?.type_line);
+    if (faceWithType?.type_line) {
+      return faceWithType.type_line;
+    }
+  }
+  return 'Land';
+}
+
 function isLandCard(card) {
   const typeLine = card?.type_line || '';
   if (typeLine.toLowerCase().includes('land')) {
@@ -81,6 +94,7 @@ async function upsertCard(db, card) {
 async function seed(db) {
   let url = BASE_URL;
   let saved = 0;
+  let page = 0;
 
   while (url) {
     await rateLimitScryfall();
@@ -89,6 +103,8 @@ async function seed(db) {
       throw new Error(`Scryfall request failed: ${response.status}`);
     }
     const data = await response.json();
+    page += 1;
+    const beforePage = saved;
     for (const card of data.data) {
       if (!isLandCard(card)) {
         continue;
@@ -100,14 +116,19 @@ async function seed(db) {
       await upsertCard(db, {
         scryfall_id: card.id,
         name: card.name,
-        type_line: card.type_line,
+        type_line: getTypeLine(card),
         image_url: artCrop,
       });
       saved += 1;
       if (saved >= CARD_LIMIT) {
+        console.log(`Reached SEED_LIMIT (${CARD_LIMIT}). Stopping after page ${page}.`);
         return saved;
       }
     }
+    const pageSaved = saved - beforePage;
+    console.log(
+      `Page ${page}: fetched ${data.data.length} cards, saved ${pageSaved} (total ${saved}/${CARD_LIMIT})`
+    );
     url = data.has_more ? data.next_page : null;
   }
 
@@ -117,6 +138,8 @@ async function seed(db) {
 (async () => {
   const db = await initDb();
   try {
+    console.log(`Seeding to ${DATABASE_PATH}`);
+    console.log(`Using SEED_LIMIT=${CARD_LIMIT} (raw env: ${SEED_LIMIT_VALUE})`);
     const saved = await seed(db);
     console.log(`Seeded ${saved} land cards.`);
   } catch (error) {

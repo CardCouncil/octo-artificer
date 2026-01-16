@@ -47,6 +47,19 @@ function getArtCrop(card) {
   return null;
 }
 
+function getTypeLine(card) {
+  if (card?.type_line) {
+    return card.type_line;
+  }
+  if (Array.isArray(card?.card_faces)) {
+    const faceWithType = card.card_faces.find((face) => face?.type_line);
+    if (faceWithType?.type_line) {
+      return faceWithType.type_line;
+    }
+  }
+  return 'Land';
+}
+
 function isLandCard(card) {
   const typeLine = card?.type_line || '';
   if (typeLine.toLowerCase().includes('land')) {
@@ -86,7 +99,7 @@ async function fetchRandomLand() {
   return {
     scryfall_id: card.id,
     name: card.name,
-    type_line: card.type_line,
+    type_line: getTypeLine(card),
     image_url: artCrop,
   };
 }
