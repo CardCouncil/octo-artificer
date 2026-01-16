@@ -1,15 +1,32 @@
-const { Pool } = require('pg');
+const fs = require('fs');
+const path = require('path');
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
 
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) {
-  console.error('Missing DATABASE_URL. Set it to a Postgres connection string.');
-  process.exit(1);
-}
-
-const pool = new Pool({ connectionString: DATABASE_URL });
+const DATABASE_PATH =
+  process.env.DATABASE_PATH || path.join(__dirname, '..', 'db', 'landfall.sqlite3');
+const SCHEMA_PATH = path.join(__dirname, '..', 'db', 'schema.sql');
 const BASE_URL =
   'https://api.scryfall.com/cards/search?q=type%3Aland&unique=art&order=name&include_extras=true';
+const SEED_LIMIT_VALUE = Number(process.env.SEED_LIMIT || '5000');
+const CARD_LIMIT =
+  Number.isFinite(SEED_LIMIT_VALUE) && SEED_LIMIT_VALUE > 0 ? SEED_LIMIT_VALUE : Infinity;
 let lastScryfallFetch = 0;
+
+async function initDb() {
+  fs.mkdirSync(path.dirname(DATABASE_PATH), { recursive: true });
+  if (!fs.existsSync(SCHEMA_PATH)) {
+    throw new Error(`Schema file not found at ${SCHEMA_PATH}`);
+  }
+  const db = await open({
+    filename: DATABASE_PATH,
+    driver: sqlite3.Database,
+  });
+  await db.exec('PRAGMA foreign_keys = ON;');
+  const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
+  await db.exec(schema);
+  return db;
+}
 
 function getArtCrop(card) {
   if (card?.image_uris?.art_crop) {
@@ -46,22 +63,22 @@ async function rateLimitScryfall() {
   lastScryfallFetch = Date.now();
 }
 
-async function upsertCard(card) {
-  await pool.query(
+async function upsertCard(db, card) {
+  await db.run(
     `
       INSERT INTO lands (scryfall_id, name, type_line, image_url)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (scryfall_id)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(scryfall_id)
       DO UPDATE SET
-        name = EXCLUDED.name,
-        type_line = EXCLUDED.type_line,
-        image_url = EXCLUDED.image_url;
+        name = excluded.name,
+        type_line = excluded.type_line,
+        image_url = excluded.image_url;
     `,
     [card.scryfall_id, card.name, card.type_line, card.image_url]
   );
 }
 
-async function seed() {
+async function seed(db) {
   let url = BASE_URL;
   let saved = 0;
 
@@ -80,13 +97,16 @@ async function seed() {
       if (!artCrop) {
         continue;
       }
-      await upsertCard({
+      await upsertCard(db, {
         scryfall_id: card.id,
         name: card.name,
         type_line: card.type_line,
         image_url: artCrop,
       });
       saved += 1;
+      if (saved >= CARD_LIMIT) {
+        return saved;
+      }
     }
     url = data.has_more ? data.next_page : null;
   }
@@ -94,13 +114,15 @@ async function seed() {
   return saved;
 }
 
-seed()
-  .then(async (saved) => {
+(async () => {
+  const db = await initDb();
+  try {
+    const saved = await seed(db);
     console.log(`Seeded ${saved} land cards.`);
-    await pool.end();
-  })
-  .catch(async (error) => {
+  } catch (error) {
     console.error('Seeding failed', error);
-    await pool.end();
-    process.exit(1);
-  });
+    process.exitCode = 1;
+  } finally {
+    await db.close();
+  }
+})();

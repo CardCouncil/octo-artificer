@@ -1,49 +1,37 @@
 const express = require('express');
+const fs = require('fs');
 const path = require('path');
-const { Pool } = require('pg');
+const sqlite3 = require('sqlite3');
+const { open } = require('sqlite');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DATABASE_URL = process.env.DATABASE_URL;
-
-if (!DATABASE_URL) {
-  console.error('Missing DATABASE_URL. Set it to a Postgres connection string.');
-  process.exit(1);
-}
-
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-});
+const DATABASE_PATH =
+  process.env.DATABASE_PATH || path.join(__dirname, 'db', 'landfall.sqlite3');
+const SCHEMA_PATH = path.join(__dirname, 'db', 'schema.sql');
 
 const SCRYFALL_RANDOM = 'https://api.scryfall.com/cards/random?q=type%3Aland';
 const MIN_CARDS = 60;
 const TARGET_CARDS = 90;
 const ALLOW_SCRYFALL_BACKFILL = process.env.SCRYFALL_BACKFILL === 'true';
 let lastScryfallFetch = 0;
+let db;
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-async function ensureTables() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS lands (
-      scryfall_id uuid PRIMARY KEY,
-      name text NOT NULL,
-      type_line text NOT NULL,
-      image_url text NOT NULL,
-      votes integer NOT NULL DEFAULT 0,
-      views integer NOT NULL DEFAULT 0,
-      created_at timestamptz NOT NULL DEFAULT now()
-    );
-  `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS vote_events (
-      id bigserial PRIMARY KEY,
-      scryfall_id uuid REFERENCES lands(scryfall_id),
-      client_id text,
-      created_at timestamptz NOT NULL DEFAULT now()
-    );
-  `);
+async function initDb() {
+  fs.mkdirSync(path.dirname(DATABASE_PATH), { recursive: true });
+  if (!fs.existsSync(SCHEMA_PATH)) {
+    throw new Error(`Schema file not found at ${SCHEMA_PATH}`);
+  }
+  db = await open({
+    filename: DATABASE_PATH,
+    driver: sqlite3.Database,
+  });
+  await db.exec('PRAGMA foreign_keys = ON;');
+  const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
+  await db.exec(schema);
 }
 
 function getArtCrop(card) {
@@ -105,26 +93,26 @@ async function fetchRandomLand() {
 
 async function saveCard(card) {
   if (!card) return false;
-  const result = await pool.query(
+  const result = await db.run(
     `
       INSERT INTO lands (scryfall_id, name, type_line, image_url)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (scryfall_id) DO NOTHING;
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(scryfall_id) DO NOTHING;
     `,
     [card.scryfall_id, card.name, card.type_line, card.image_url]
   );
-  return result.rowCount > 0;
+  return result.changes > 0;
 }
 
 async function ensureInventory() {
-  const { rows } = await pool.query('SELECT COUNT(*)::int AS count FROM lands;');
-  const count = rows[0]?.count ?? 0;
+  const row = await db.get('SELECT COUNT(*) AS count FROM lands;');
+  const count = Number(row?.count ?? 0);
   if (count >= MIN_CARDS) {
     return;
   }
   if (!ALLOW_SCRYFALL_BACKFILL) {
     throw new Error(
-      `Not enough land cards in the database (${count}). Run \"npm run seed\" to populate it.`
+      `Not enough land cards in the database (${count}). Run "npm run seed" to populate it.`
     );
   }
   const toFetch = TARGET_CARDS - count;
@@ -141,11 +129,11 @@ async function ensureInventory() {
 
 async function getRandomPair() {
   await ensureInventory();
-  const { rows } = await pool.query(
+  const rows = await db.all(
     `
       SELECT scryfall_id, name, type_line, image_url, votes, views
       FROM lands
-      ORDER BY random()
+      ORDER BY RANDOM()
       LIMIT 2;
     `
   );
@@ -159,7 +147,10 @@ app.get('/api/pair', async (req, res) => {
   try {
     const pair = await getRandomPair();
     const ids = pair.map((card) => card.scryfall_id);
-    await pool.query('UPDATE lands SET views = views + 1 WHERE scryfall_id = ANY($1::uuid[])', [ids]);
+    await db.run('UPDATE lands SET views = views + 1 WHERE scryfall_id IN (?, ?);', [
+      ids[0],
+      ids[1],
+    ]);
     res.json({
       cards: pair.map((card) => ({
         id: card.scryfall_id,
@@ -179,41 +170,43 @@ app.post('/api/vote', async (req, res) => {
   if (!selectedId || !otherId || selectedId === otherId) {
     return res.status(400).json({ error: 'Invalid vote payload.' });
   }
-  const client = await pool.connect();
+  let transactionActive = false;
   try {
-    await client.query('BEGIN');
-    const voteResult = await client.query(
-      'UPDATE lands SET votes = votes + 1 WHERE scryfall_id = $1 RETURNING scryfall_id;',
+    await db.exec('BEGIN');
+    transactionActive = true;
+    const voteResult = await db.run(
+      'UPDATE lands SET votes = votes + 1 WHERE scryfall_id = ?;',
       [selectedId]
     );
-    if (voteResult.rowCount === 0) {
-      await client.query('ROLLBACK');
+    if (voteResult.changes === 0) {
+      await db.exec('ROLLBACK');
       return res.status(404).json({ error: 'Selected card not found.' });
     }
-    await client.query(
-      'INSERT INTO vote_events (scryfall_id, client_id) VALUES ($1, $2);',
-      [selectedId, clientId || null]
-    );
-    const { rows } = await client.query(
+    await db.run('INSERT INTO vote_events (scryfall_id, client_id) VALUES (?, ?);', [
+      selectedId,
+      clientId || null,
+    ]);
+    const rows = await db.all(
       `
         SELECT scryfall_id, votes, views
         FROM lands
-        WHERE scryfall_id = ANY($1::uuid[]);
+        WHERE scryfall_id IN (?, ?);
       `,
-      [[selectedId, otherId]]
+      [selectedId, otherId]
     );
-    await client.query('COMMIT');
+    await db.exec('COMMIT');
+    transactionActive = false;
     const counts = rows.reduce((acc, row) => {
       acc[row.scryfall_id] = { votes: row.votes, views: row.views };
       return acc;
     }, {});
     return res.json({ counts });
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (transactionActive) {
+      await db.exec('ROLLBACK');
+    }
     console.error(error);
     return res.status(500).json({ error: 'Failed to record vote.' });
-  } finally {
-    client.release();
   }
 });
 
@@ -221,7 +214,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-ensureTables()
+initDb()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`Landfall listening on port ${PORT}`);
